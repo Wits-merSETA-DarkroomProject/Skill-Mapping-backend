@@ -61,10 +61,44 @@ async def test_gap_analysis_engine_flow():
     assert len(evaluation.recommended_pathways) > 0
     assert "Sipho" in evaluation.ai_guidance_summary
 
+@pytest.mark.asyncio
+async def test_decoupled_matcher():
+    candidates = [
+        {"id": "sk_python", "label": "Python", "alt_labels": ["Python programming", "Python language"]},
+        {"id": "sk_sql", "label": "SQL", "alt_labels": ["SQL databases", "structured query language"]},
+        {"id": "sk_ml", "label": "machine learning", "alt_labels": ["Deep learning", "neural networks"]},
+        {"id": "sk_data_vis", "label": "data visualisation", "alt_labels": ["Tableau dashboards", "charts"]}
+    ]
+
+    # 1. Test "Python programming" -> "Python"
+    res1 = await gap_engine.match_skill("Python programming", candidates)
+    assert res1 is not None
+    assert res1["label"] == "Python"
+    assert res1["confidence"] == "High"
+
+    # 2. Test "SQL databases" -> "SQL"
+    res2 = await gap_engine.match_skill("SQL databases", candidates)
+    assert res2 is not None
+    assert res2["label"] == "SQL"
+    assert res2["confidence"] == "High"
+
+    # 3. Test "Deep learning" -> "machine learning"
+    res3 = await gap_engine.match_skill("Deep learning", candidates)
+    assert res3 is not None
+    assert res3["label"] == "machine learning"
+    assert res3["confidence"] == "High"
+
+    # 4. Test "Tableau dashboards" -> "data visualisation"
+    res4 = await gap_engine.match_skill("Tableau dashboards", candidates)
+    assert res4 is not None
+    assert res4["label"] == "data visualisation"
+    assert res4["confidence"] == "High"
+
 if __name__ == "__main__":
     print("Running tests directly...")
     test_db_manager_occupations()
     test_document_extraction_txt()
     asyncio.run(test_ai_competency_extraction())
     asyncio.run(test_gap_analysis_engine_flow())
+    asyncio.run(test_decoupled_matcher())
     print("ALL TESTS PASSED SUCCESSFULLY!")

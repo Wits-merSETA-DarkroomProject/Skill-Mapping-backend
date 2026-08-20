@@ -1,6 +1,7 @@
 import uuid
 import logging
-from typing import List, Dict, Any, Tuple
+import asyncio
+from typing import List, Dict, Any, Tuple, Optional
 import numpy as np
 
 from app.db.supabase_client import db_manager
@@ -23,6 +24,9 @@ class GapAnalysisEngine:
     Calculates exact Essential vs. Optional requirements, rankings, and pathway attachments.
     """
 
+    def __init__(self):
+        self.skill_embeddings_cache: Dict[str, List[float]] = {}
+
     async def resolve_skills_and_adjacency(
         self,
         profile_id: str,
@@ -40,7 +44,7 @@ class GapAnalysisEngine:
             citation = claim_obj.get("source_citation", "")
             
             # Find best matching ESCO skill
-            best_match, score = self._find_best_esco_match(claim_text, all_esco_skills)
+            best_match, score = await self._find_best_esco_match(claim_text, all_esco_skills)
             
             if best_match and score >= 0.50 and best_match["id"] not in matched_skill_ids:
                 matched_skill_ids.add(best_match["id"])
@@ -58,45 +62,88 @@ class GapAnalysisEngine:
                 ))
 
         # Calculate Adjacency across all ESCO occupations
-        adjacent_occupations = self._calculate_adjacent_occupations(matched_skill_ids)
+        adjacent_occupations = self._calculate_adjacent_occupations(matched_items)
 
         return matched_items, adjacent_occupations
 
-    def _find_best_esco_match(
+    async def _find_best_esco_match(
         self,
         claim_text: str,
         esco_skills: List[Dict[str, Any]]
     ) -> Tuple[Dict[str, Any], float]:
         """
-        Computes semantic and keyword proximity between claim and ESCO skills.
+        Computes semantic proximity using embeddings and cosine similarity between claim and ESCO skills.
+        Uses token/keyword Jaccard overlap to pre-filter candidate pool when matching against the entire database.
         """
         claim_lower = claim_text.lower()
+        if not esco_skills:
+            return None, 0.0
+
+        # 1. Pre-filter comparison pool to top 150 candidates using token/keyword overlap to prevent API timeout / rate limits
+        if len(esco_skills) > 200:
+            STOPWORDS = {"and", "of", "to", "in", "for", "with", "on", "or", "the", "a", "an", "by", "at", "from", "as", "about"}
+            claim_words = set(w for w in claim_lower.split() if w not in STOPWORDS)
+            candidates = []
+            for s in esco_skills:
+                label_words = set(s["label"].lower().split())
+                for alt in s.get("alt_labels", []):
+                    label_words.update(alt.lower().split())
+                overlap = len(claim_words.intersection(label_words))
+                candidates.append((s, overlap))
+            
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            comparison_pool = [c[0] for c in candidates[:150]]
+        else:
+            comparison_pool = esco_skills
+
+        # 2. Extract embedding for the claim
+        try:
+            claim_emb = await ai_service.get_embedding(claim_text)
+            if not claim_emb:
+                raise ValueError("Empty embedding returned")
+            claim_arr = np.array(claim_emb)
+            claim_norm = np.linalg.norm(claim_arr)
+        except Exception as e:
+            logger.warning(f"Embedding extraction failed for '{claim_text}': {e}. Falling back to Jaccard match.")
+            return self._find_best_esco_match_jaccard_fallback(claim_text, comparison_pool)
+
+        # 3. Resolve skill embeddings (using cache or fetching async)
+        uncached_skills = [s for s in comparison_pool if s["id"] not in self.skill_embeddings_cache]
+        if uncached_skills:
+            chunk_size = 100
+            for i in range(0, len(uncached_skills), chunk_size):
+                chunk = uncached_skills[i:i + chunk_size]
+                # Combine label and alt_labels to capture all keywords/synonyms in the embedding
+                combined_texts = ["; ".join([s["label"]] + s.get("alt_labels", [])) for s in chunk]
+                tasks = [ai_service.get_embedding(text) for text in combined_texts]
+                embeddings = await asyncio.gather(*tasks, return_exceptions=True)
+                for s, emb in zip(chunk, embeddings):
+                    if isinstance(emb, Exception) or not emb:
+                        # Fallback mock embedding if API fails
+                        combined_text = "; ".join([s["label"]] + s.get("alt_labels", []))
+                        self.skill_embeddings_cache[s["id"]] = ai_service._get_deterministic_mock_embedding(combined_text)
+                    else:
+                        self.skill_embeddings_cache[s["id"]] = emb
+
+        # 4. Compute cosine similarity against candidate skills
         best_skill = None
         best_score = 0.0
 
-        for skill in esco_skills:
-            score = 0.0
-            label = skill["label"].lower()
-            alt_labels = [a.lower() for a in skill.get("alt_labels", [])]
-
-            # Exact alias hit
-            if any(alt in claim_lower or claim_lower in alt for alt in alt_labels):
-                score = 0.95
-            elif label in claim_lower or claim_lower in label:
-                score = 0.90
+        for skill in comparison_pool:
+            skill_emb = self.skill_embeddings_cache.get(skill["id"])
+            if not skill_emb:
+                continue
+            
+            skill_arr = np.array(skill_emb)
+            skill_norm = np.linalg.norm(skill_arr)
+            if claim_norm == 0 or skill_norm == 0:
+                cosine_score = 0.0
             else:
-                # Word overlap Jaccard
-                claim_words = set(claim_lower.split())
-                label_words = set(label.split())
-                for alt in alt_labels:
-                    label_words.update(alt.split())
-                
-                overlap = len(claim_words.intersection(label_words))
-                if overlap > 0:
-                    score = overlap / max(len(claim_words), len(label_words))
-                    # Boost for important keywords
-                    if score > 0.3:
-                        score = min(0.85, score + 0.35)
+                cosine_score = float(np.dot(claim_arr, skill_arr) / (claim_norm * skill_norm))
+
+            # Hybrid Jaccard fallback for mock environments and keyword match safety
+            jaccard_score = self._compute_jaccard_score(claim_text, skill)
+            score = max(cosine_score, jaccard_score)
 
             if score > best_score:
                 best_score = score
@@ -104,21 +151,162 @@ class GapAnalysisEngine:
 
         return best_skill, best_score
 
+    def _compute_jaccard_score(
+        self,
+        claim_text: str,
+        skill: Dict[str, Any]
+    ) -> float:
+        claim_lower = claim_text.lower()
+        label = skill["label"].lower()
+        alt_labels = [a.lower() for a in skill.get("alt_labels", [])]
+
+        if any(alt in claim_lower or claim_lower in alt for alt in alt_labels):
+            return 0.95
+        if label in claim_lower or claim_lower in label:
+            return 0.90
+
+        claim_words = set(claim_lower.split())
+        label_words = set(label.split())
+        for alt in alt_labels:
+            label_words.update(alt.split())
+        
+        overlap = len(claim_words.intersection(label_words))
+        if overlap > 0:
+            score = overlap / max(len(claim_words), len(label_words))
+            if score > 0.3:
+                return min(0.85, score + 0.35)
+            return score
+        return 0.0
+
+    def _find_best_esco_match_jaccard_fallback(
+        self,
+        claim_text: str,
+        esco_skills: List[Dict[str, Any]]
+    ) -> Tuple[Dict[str, Any], float]:
+        best_skill = None
+        best_score = 0.0
+        for skill in esco_skills:
+            score = self._compute_jaccard_score(claim_text, skill)
+            if score > best_score:
+                best_score = score
+                best_skill = skill
+        return best_skill, best_score
+
+    async def match_skill(
+        self,
+        claim: str,
+        candidates: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Decoupled matcher interface. Receives a skill claim and a list of candidate skills.
+        Performs semantic and hybrid ranking, returning the top match with confidence scoring.
+        """
+        if not candidates:
+            return None
+
+        # Clean/Format candidates list if they are in db format (preferred_label, concept_uri)
+        formatted_candidates = []
+        for c in candidates:
+            formatted_candidates.append({
+                "id": c.get("id") or c.get("concept_uri"),
+                "label": c.get("label") or c.get("preferred_label"),
+                "alt_labels": c.get("alt_labels") or ([c.get("alt_names")] if c.get("alt_names") else [])
+            })
+
+        best_match, score = await self._find_best_esco_match(claim, formatted_candidates)
+        if not best_match or score < 0.50:
+            return None
+
+        # Define confidence tiers
+        if score >= 0.85:
+            confidence = "High"
+        elif score >= 0.70:
+            confidence = "Medium"
+        else:
+            confidence = "Low"
+
+        return {
+            "id": best_match["id"],
+            "label": best_match["label"],
+            "score": round(score, 2),
+            "confidence": confidence
+        }
+
+    def _skills_match_semantically(self, skill_a: Dict[str, Any], skill_b: Dict[str, Any]) -> bool:
+        """
+        Determines if two skills match semantically via exact labels, synonyms (alt_labels),
+        or shared high-value domain keywords.
+        """
+        # 1. Check ID/URI match
+        id_a = skill_a.get("id") or skill_a.get("skill_id") or skill_a.get("concept_uri")
+        id_b = skill_b.get("id") or skill_b.get("skill_id") or skill_b.get("concept_uri")
+        if id_a and id_b and id_a == id_b:
+            return True
+
+        # 2. Check preferred labels
+        label_a = (skill_a.get("label") or skill_a.get("preferred_label") or "").lower().strip()
+        label_b = (skill_b.get("label") or skill_b.get("preferred_label") or "").lower().strip()
+        if not label_a or not label_b:
+            return False
+
+        if label_a in label_b or label_b in label_a:
+            return True
+
+        # 3. Check alt labels
+        alts_a = [a.lower().strip() for a in skill_a.get("alt_labels", []) if a.strip()]
+        alts_b = [b.lower().strip() for b in skill_b.get("alt_labels", []) if b.strip()]
+
+        all_a = {label_a} | set(alts_a)
+        all_b = {label_b} | set(alts_b)
+
+        if all_a.intersection(all_b):
+            return True
+
+        # 4. Check high-value domain keywords
+        STOPWORDS = {"and", "of", "to", "in", "for", "with", "on", "or", "the", "a", "an", "by", "at", "from", "as", "about"}
+        words_a = set(w for w in label_a.split() if w not in STOPWORDS)
+        words_b = set(w for w in label_b.split() if w not in STOPWORDS)
+
+        common = words_a.intersection(words_b)
+        if common:
+            keywords = {"plc", "hydraulic", "hydraulics", "pneumatic", "pneumatics", "weld", "welding", "audit", "maintenance", "electrical", "drawings", "cnc", "solar"}
+            if common.intersection(keywords):
+                return True
+
+        return False
+
     def _calculate_adjacent_occupations(
         self,
-        user_skill_ids: set
+        resolved_skills: List[ExtractedSkillItem]
     ) -> List[AdjacentOccupation]:
         """
         Ranks all ESCO occupations based on candidate's matched essential skills.
+        Supports both direct ID matching and flexible label/synonym matching to bridge mock occupations and live database skills.
         """
         occupations = db_manager.get_all_occupations()
         results = []
+
+        # Convert resolved skills to dicts and inject alt_labels from the master skills list cache
+        all_skills_map = {s["id"]: s for s in db_manager.get_all_skills_flat()}
+        resolved_dicts = []
+        for s in resolved_skills:
+            s_dict = s.model_dump() if hasattr(s, "model_dump") else s
+            skill_id = s_dict.get("skill_id") or s_dict.get("id")
+            master_skill = all_skills_map.get(skill_id)
+            if master_skill:
+                s_dict["alt_labels"] = master_skill.get("alt_labels", [])
+            resolved_dicts.append(s_dict)
 
         for occ in occupations:
             essential_skills = [s for s in occ["skills"] if s.get("relation_type") == "essential"]
             total_essential = len(essential_skills)
             
-            matched_count = sum(1 for s in essential_skills if s["id"] in user_skill_ids)
+            matched_count = 0
+            for ess in essential_skills:
+                # Check if this essential skill matches any of our resolved skills
+                if any(self._skills_match_semantically(ess, res) for res in resolved_dicts):
+                    matched_count += 1
+
             pct = round((matched_count / total_essential * 100)) if total_essential > 0 else 0
 
             results.append(AdjacentOccupation(
@@ -151,6 +339,17 @@ class GapAnalysisEngine:
         user_skill_map = {s["skill_id"]: s for s in extracted_skills_list}
         user_skill_ids = set(user_skill_map.keys())
 
+        # Map all_skills to resolved_dicts items to inject alt_labels
+        all_skills_map = {s["id"]: s for s in db_manager.get_all_skills_flat()}
+        resolved_dicts = []
+        for s in extracted_skills_list:
+            s_dict = s.copy() if isinstance(s, dict) else s.model_dump()
+            skill_id = s_dict.get("skill_id") or s_dict.get("id")
+            master_skill = all_skills_map.get(skill_id)
+            if master_skill:
+                s_dict["alt_labels"] = master_skill.get("alt_labels", [])
+            resolved_dicts.append(s_dict)
+
         matched_essential: List[SkillMatchResult] = []
         missing_essential: List[SkillMatchResult] = []
         matched_optional: List[SkillMatchResult] = []
@@ -163,17 +362,28 @@ class GapAnalysisEngine:
         for skill in occ["skills"]:
             is_essential = skill.get("relation_type", "essential") == "essential"
             skill_id = skill["id"]
-            is_matched = skill_id in user_skill_ids
+            
+            is_matched = False
+            user_item = {}
+            # Match by ID or semantically by label/synonyms
+            if skill_id in user_skill_ids:
+                is_matched = True
+                user_item = user_skill_map.get(skill_id, {})
+            else:
+                for s in resolved_dicts:
+                    if self._skills_match_semantically(skill, s):
+                        is_matched = True
+                        user_item = s
+                        break
 
-            user_item = user_skill_map.get(skill_id, {})
             match_res = SkillMatchResult(
                 skill_id=skill_id,
                 preferred_label=skill["label"],
                 relation_type="essential" if is_essential else "optional",
                 is_matched=is_matched,
-                confidence_score=user_item.get("confidence_score"),
-                source_citation=user_item.get("source_citation"),
-                confidence_tier=user_item.get("confidence_tier")
+                confidence_score=user_item.get("confidence_score") if isinstance(user_item, dict) else getattr(user_item, "confidence_score", None),
+                source_citation=user_item.get("source_citation") if isinstance(user_item, dict) else getattr(user_item, "source_citation", None),
+                confidence_tier=user_item.get("confidence_tier") if isinstance(user_item, dict) else getattr(user_item, "confidence_tier", None)
             )
 
             if is_essential:
