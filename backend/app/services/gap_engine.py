@@ -1,6 +1,7 @@
 import uuid
 import logging
 import asyncio
+import json
 from typing import List, Dict, Any, Tuple, Optional
 import numpy as np
 
@@ -12,7 +13,7 @@ from app.schemas.gap_analysis import (
     SkillRequirement,
     OccupationSummary,
     SkillMatchResult,
-    LearningPathwayItem,
+    #LearningPathwayItem,
     EvaluationResponse
 )
 
@@ -107,7 +108,24 @@ class GapAnalysisEngine:
             logger.warning(f"Embedding extraction failed for '{claim_text}': {e}. Falling back to Jaccard match.")
             return self._find_best_esco_match_jaccard_fallback(claim_text, comparison_pool)
 
-        # 3. Resolve skill embeddings (using cache or fetching async)
+        # 3. Resolve skill embeddings (using cache, DB value, or fetching async)
+        for s in comparison_pool:
+            if s.get("vector_embedding") and s["id"] not in self.skill_embeddings_cache:
+                emb_val = s["vector_embedding"]
+                if isinstance(emb_val, str):
+                    try:
+                        emb_val = json.loads(emb_val)
+                    except Exception:
+                        try:
+                            clean_str = emb_val.strip("[]{}")
+                            emb_val = [float(val) for val in clean_str.split(",") if val.strip()]
+                        except Exception as e:
+                            logger.error(f"Failed parsing vector string: {e}")
+                            emb_val = None
+                
+                if emb_val:
+                    self.skill_embeddings_cache[s["id"]] = emb_val
+
         uncached_skills = [s for s in comparison_pool if s["id"] not in self.skill_embeddings_cache]
         if uncached_skills:
             chunk_size = 100
@@ -124,6 +142,8 @@ class GapAnalysisEngine:
                         self.skill_embeddings_cache[s["id"]] = ai_service._get_deterministic_mock_embedding(combined_text)
                     else:
                         self.skill_embeddings_cache[s["id"]] = emb
+                        # Save calculated embedding back to database
+                        db_manager.update_skill_embedding(s["id"], emb)
 
         # 4. Compute cosine similarity against candidate skills
         best_skill = None
@@ -354,7 +374,7 @@ class GapAnalysisEngine:
         missing_essential: List[SkillMatchResult] = []
         matched_optional: List[SkillMatchResult] = []
         missing_optional: List[SkillMatchResult] = []
-        recommended_pathways: List[LearningPathwayItem] = []
+        #recommended_pathways: List[LearningPathwayItem] = []
 
         essential_reqs = []
         optional_reqs = []
@@ -399,18 +419,18 @@ class GapAnalysisEngine:
                     matched_essential.append(match_res)
                 else:
                     missing_essential.append(match_res)
-                    # Lookup learning pathway for missing essential skill
-                    pathway = db_manager.get_pathway_for_skill(skill_id)
-                    if pathway:
-                        recommended_pathways.append(LearningPathwayItem(
-                            skill_name=skill["label"],
-                            course_title=pathway["course_title"],
-                            provider_name=pathway["provider_name"],
-                            nqf_level=pathway["nqf_level"],
-                            funding_scheme=pathway["funding_scheme"],
-                            duration_weeks=pathway.get("duration_weeks", 4),
-                            description=pathway.get("description")
-                        ))
+                    # # Lookup learning pathway for missing essential skill
+                    # pathway = db_manager.get_pathway_for_skill(skill_id)
+                    # if pathway:
+                    #     #recommended_pathways.append(LearningPathwayItem(
+                    #         skill_name=skill["label"],
+                    #         course_title=pathway["course_title"],
+                    #         provider_name=pathway["provider_name"],
+                    #         nqf_level=pathway["nqf_level"],
+                    #         funding_scheme=pathway["funding_scheme"],
+                    #         duration_weeks=pathway.get("duration_weeks", 4),
+                    #         description=pathway.get("description")
+                    #     ))
             else:
                 optional_reqs.append(SkillRequirement(
                     skill_id=skill["id"],
@@ -465,7 +485,7 @@ class GapAnalysisEngine:
             missing_essential=missing_essential,
             matched_optional=matched_optional,
             missing_optional=missing_optional,
-            recommended_pathways=recommended_pathways,
+            #recommended_pathways=recommended_pathways,
             ai_guidance_summary=guidance
         )
 

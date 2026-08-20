@@ -214,6 +214,24 @@ Return ONLY valid JSON matching this schema:
     # 2. Dense Embeddings & Vector Similarity
     # -------------------------------------------------------------------------
     async def get_embedding(self, text: str) -> List[float]:
+        if settings.HF_API_KEY:
+            try:
+                model_id = settings.EMBEDDING_MODEL or "BAAI/bge-large-en-v1.5"
+                url = f"https://router.huggingface.co/hf-inference/models/{model_id}"
+                headers = {"Authorization": f"Bearer {settings.HF_API_KEY}"}
+                async with httpx.AsyncClient(timeout=25.0) as client:
+                    resp = await client.post(url, headers=headers, json={"inputs": text})
+                    resp.raise_for_status()
+                    result = resp.json()
+                    if isinstance(result, list):
+                        if len(result) > 0 and isinstance(result[0], list):
+                            if len(result[0]) > 0 and isinstance(result[0][0], list):
+                                return result[0][0]
+                            return result[0]
+                        return result
+            except Exception as e:
+                logger.error(f"Hugging Face embedding generation failed: {e}")
+
         if settings.OPENAI_API_KEY:
             try:
                 async with httpx.AsyncClient(timeout=20.0) as client:
@@ -230,10 +248,11 @@ Return ONLY valid JSON matching this schema:
         return self._get_deterministic_mock_embedding(text)
 
     def _get_deterministic_mock_embedding(self, text: str) -> List[float]:
-        vec = np.zeros(1536, dtype=np.float32)
+        dim = settings.EMBEDDING_DIMENSION or 1024
+        vec = np.zeros(dim, dtype=np.float32)
         words = text.lower().split()
         for w in words:
-            idx = abs(hash(w)) % 1536
+            idx = abs(hash(w)) % dim
             vec[idx] += 1.0
         norm = np.linalg.norm(vec)
         if norm > 0:
@@ -260,7 +279,7 @@ Match Score: {match_percent}%
 Matched Competencies: {', '.join(matched_skills) if matched_skills else 'None'}
 Missing Essential Gaps: {', '.join(missing_essential) if missing_essential else 'None'}
 
-Write a 2-3 sentence personalized, encouraging career advice summary. Mention the specific missing skills and recommend enrolling in accredited modular TVET short courses or trade test prep.
+Write a 2-3 sentence personalized, encouraging career advice summary. Mention the specific missing skills and recommend focus areas for practical hands-on practice, mentorship, or targeted on-the-job skill development.
 """
         if self.provider == "groq" and settings.GROQ_API_KEY:
             try:
@@ -301,12 +320,12 @@ Write a 2-3 sentence personalized, encouraging career advice summary. Mention th
 
         # Deterministic structured summary fallback
         if match_percent >= 90:
-            return f"{candidate_name}'s profile demonstrates outstanding alignment ({match_percent}%) with the {occupation_title} profile. All core trade competencies are accounted for, verifying high readiness for immediate placement or trade test qualification."
+            return f"{candidate_name}'s profile demonstrates outstanding alignment ({match_percent}%) with the {occupation_title} profile. All core trade competencies are accounted for, verifying high readiness for immediate placement or role qualification."
         elif match_percent >= 60:
-            gaps_str = " and ".join(missing_essential[:2]) if missing_essential else "secondary modules"
-            return f"{candidate_name} exhibits a strong foundation for the {occupation_title} role with a {match_percent}% match. The primary technical gaps include {gaps_str}. Completing accredited TVET modules or apprenticeship training will rapidly close these gaps."
+            gaps_str = " and ".join(missing_essential[:2]) if missing_essential else "secondary skills"
+            return f"{candidate_name} exhibits a strong foundation for the {occupation_title} role with a {match_percent}% match. The primary technical gaps include {gaps_str}. Seeking targeted mentorship or hands-on practice will rapidly close these gaps."
         else:
             gaps_str = ", ".join(missing_essential[:3]) if missing_essential else "core parameters"
-            return f"{candidate_name}'s profile currently shows emerging alignment ({match_percent}%) with {occupation_title}. Key skill gaps exist in {gaps_str}. Structured apprentice learning pathways are recommended before seeking formal trade assessment."
+            return f"{candidate_name}'s profile currently shows emerging alignment ({match_percent}%) with {occupation_title}. Key skill gaps exist in {gaps_str}. Focused hands-on training and peer mentorship are recommended to help build these capabilities."
 
 ai_service = AIService()

@@ -313,7 +313,7 @@ class DataIngestionService:
     def _execute_skills_upsert(cls, batch: List[Dict[str, Any]]) -> Tuple[int, Optional[str]]:
         if db_manager.is_connected and db_manager.client:
             try:
-                db_manager.client.table("esco_skills").upsert(batch, on_conflict="concept_uri").execute()
+                db_manager.client.table("skills").upsert(batch, on_conflict="concept_uri").execute()
                 return len(batch), None
             except Exception as e:
                 err_str = str(e)
@@ -330,7 +330,7 @@ class DataIngestionService:
     def _execute_occupations_upsert(cls, batch: List[Dict[str, Any]]) -> Tuple[int, Optional[str]]:
         if db_manager.is_connected and db_manager.client:
             try:
-                db_manager.client.table("esco_occupations").upsert(batch, on_conflict="concept_uri").execute()
+                db_manager.client.table("occupations").upsert(batch, on_conflict="concept_uri").execute()
                 return len(batch), None
             except Exception as e:
                 err_str = str(e)

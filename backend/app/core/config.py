@@ -37,10 +37,11 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
+    HF_API_KEY: str = ""
 
     LLM_MODEL: str = "openai/gpt-oss-120b"
     EMBEDDING_MODEL: str = "text-embedding-3-small"
-    EMBEDDING_DIMENSION: int = 1536
+    EMBEDDING_DIMENSION: int = 1024
 
     model_config = SettingsConfigDict(
         env_file=os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env"),

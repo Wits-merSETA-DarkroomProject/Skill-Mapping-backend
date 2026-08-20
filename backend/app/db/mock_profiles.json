@@ -1,0 +1,44 @@
+{
+  "mock_user_sipho": {
+    "id": "mock_user_sipho",
+    "full_name": "Sipho Ndlovu",
+    "extracted_skills": [
+      {
+        "skill_id": "sk_plc_01",
+        "preferred_label": "troubleshoot programmable logic controllers",
+        "extracted_claim": "PLC troubleshooting and fault finding",
+        "confidence_score": 0.95,
+        "confidence_tier": "direct",
+        "source_citation": "Line 2",
+        "skill_type": "skill/competence"
+      },
+      {
+        "skill_id": "sk_hyd_02",
+        "preferred_label": "maintain hydraulic systems",
+        "extracted_claim": "Industrial hydraulic systems maintenance",
+        "confidence_score": 0.90,
+        "confidence_tier": "direct",
+        "source_citation": "Line 3",
+        "skill_type": "skill/competence"
+      },
+      {
+        "skill_id": "sk_prev_maint_04",
+        "preferred_label": "perform preventative maintenance",
+        "extracted_claim": "Preventative maintenance execution",
+        "confidence_score": 0.88,
+        "confidence_tier": "direct",
+        "source_citation": "Line 3",
+        "skill_type": "skill/competence"
+      },
+      {
+        "skill_id": "sk_weld_05",
+        "preferred_label": "weld metal structures",
+        "extracted_claim": "Metal welding and fabrication",
+        "confidence_score": 0.85,
+        "confidence_tier": "direct",
+        "source_citation": "Line 4",
+        "skill_type": "skill/competence"
+      }
+    ]
+  }
+}

@@ -66,14 +66,14 @@ class EvaluationRequest(BaseModel):
     profile_id: str
     occupation_id: str
 
-class LearningPathwayItem(BaseModel):
-    skill_name: str
-    course_title: str
-    provider_name: str
-    nqf_level: str
-    funding_scheme: str
-    duration_weeks: Optional[int] = 4
-    description: Optional[str] = None
+# class LearningPathwayItem(BaseModel):
+#     skill_name: str
+#     course_title: str
+#     provider_name: str
+#     nqf_level: str
+#     funding_scheme: str
+#     duration_weeks: Optional[int] = 4
+#     description: Optional[str] = None
 
 class SkillMatchResult(BaseModel):
     skill_id: str
@@ -97,5 +97,5 @@ class EvaluationResponse(BaseModel):
     matched_optional: List[SkillMatchResult]
     missing_optional: List[SkillMatchResult]
     
-    recommended_pathways: List[LearningPathwayItem]
+    #recommended_pathways: List[LearningPathwayItem]
     ai_guidance_summary: str

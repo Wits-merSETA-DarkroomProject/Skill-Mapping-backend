@@ -78,7 +78,7 @@ def ingest_esco_skills_df(df: pd.DataFrame, batch_size: int = 500) -> int:
 
 def _upsert_batch(batch: List[Dict[str, Any]]):
     try:
-        db_manager.client.table("esco_skills").upsert(batch, on_conflict="concept_uri").execute()
+        db_manager.client.table("skills").upsert(batch, on_conflict="concept_uri").execute()
     except Exception as e:
         logger.error(f"Failed to upsert batch: {e}")
         raise e

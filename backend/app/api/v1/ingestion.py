@@ -71,8 +71,8 @@ async def get_ingestion_status():
 
     if db_manager.is_connected and db_manager.client:
         try:
-            sk_resp = db_manager.client.table("esco_skills").select("concept_uri", count="exact").head().execute()
-            occ_resp = db_manager.client.table("esco_occupations").select("concept_uri", count="exact").head().execute()
+            sk_resp = db_manager.client.table("skills").select("concept_uri", count="exact").head().execute()
+            occ_resp = db_manager.client.table("occupations").select("concept_uri", count="exact").head().execute()
             total_skills_count = getattr(sk_resp, "count", 0) or 0
             total_occupations_count = getattr(occ_resp, "count", 0) or 0
         except Exception as e:
