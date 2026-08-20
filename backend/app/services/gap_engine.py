@@ -128,22 +128,31 @@ class GapAnalysisEngine:
 
         uncached_skills = [s for s in comparison_pool if s["id"] not in self.skill_embeddings_cache]
         if uncached_skills:
-            chunk_size = 100
-            for i in range(0, len(uncached_skills), chunk_size):
-                chunk = uncached_skills[i:i + chunk_size]
-                # Combine label and alt_labels to capture all keywords/synonyms in the embedding
-                combined_texts = ["; ".join([s["label"]] + s.get("alt_labels", [])) for s in chunk]
-                tasks = [ai_service.get_embedding(text) for text in combined_texts]
-                embeddings = await asyncio.gather(*tasks, return_exceptions=True)
-                for s, emb in zip(chunk, embeddings):
-                    if isinstance(emb, Exception) or not emb:
-                        # Fallback mock embedding if API fails
-                        combined_text = "; ".join([s["label"]] + s.get("alt_labels", []))
-                        self.skill_embeddings_cache[s["id"]] = ai_service._get_deterministic_mock_embedding(combined_text)
-                    else:
-                        self.skill_embeddings_cache[s["id"]] = emb
-                        # Save calculated embedding back to database
-                        db_manager.update_skill_embedding(s["id"], emb)
+            if len(uncached_skills) > 50:
+                logger.warning(f"Found {len(uncached_skills)} uncached skills. Using local mock embeddings to avoid hitting API limits.")
+                for s in uncached_skills:
+                    self.skill_embeddings_cache[s["id"]] = ai_service._get_deterministic_mock_embedding(s["label"])
+            else:
+                chunk_size = 100
+                for i in range(0, len(uncached_skills), chunk_size):
+                    chunk = uncached_skills[i:i + chunk_size]
+                    # Combine label and alt_labels to capture all keywords/synonyms in the embedding
+                    combined_texts = ["; ".join([s["label"]] + s.get("alt_labels", [])) for s in chunk]
+                    tasks = [ai_service.get_embedding(text) for text in combined_texts]
+                    embeddings = await asyncio.gather(*tasks, return_exceptions=True)
+                    for s, emb in zip(chunk, embeddings):
+                        if isinstance(emb, Exception) or not emb:
+                            # Fallback mock embedding if API fails
+                            emb_list = ai_service._get_deterministic_mock_embedding(s["label"])
+                        else:
+                            emb_list = emb
+                        
+                        self.skill_embeddings_cache[s["id"]] = emb_list
+                        # Sync back to Supabase in the background
+                        try:
+                            db_manager.update_skill_embedding(s["id"], emb_list)
+                        except Exception as sync_err:
+                            logger.warning(f"Background embedding sync failed: {sync_err}")
 
         # 4. Compute cosine similarity against candidate skills
         best_skill = None
